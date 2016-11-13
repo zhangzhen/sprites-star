@@ -4,10 +4,13 @@ project(sprites)
 
 include_directories($ENV{BAMTOOLS_HOME}/include $ENV{HTSLIB_HOME})
 #link_directories($ENV{BAMTOOLS_HOME}/lib $ENV{HTSLIB_HOME})
-add_definitions(-std=c++0x)
+add_definitions(-std=c++11)
 
-add_executable(sprites main.cpp error.cpp Helper.cpp
-Deletion.cpp Thirdparty/overlapper.cpp BamStatCalculator.cpp ClipReader.cpp clip.cpp FaidxWrapper.cpp range.cpp)
+file(GLOB SOURCES
+	"*.cpp"
+	"Thirdparty/*.cpp")
+
+add_executable(sprites ${SOURCES})
 target_link_libraries(sprites $ENV{HTSLIB_HOME}/libhts.a $ENV{BAMTOOLS_HOME}/lib/libbamtools.a pthread z)
 
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wall")

@@ -9,8 +9,9 @@
 using namespace std;
 using namespace BamTools;
 
-AbstractClip::AbstractClip(int referenceId, int mapPosition, int clipPosition, int matePosition, const string &sequence, const vector<CigarOp>& cigar)
+AbstractClip::AbstractClip(int referenceId, const string& referenceName, int mapPosition, int clipPosition, int matePosition, const string &sequence, const vector<CigarOp>& cigar)
     : referenceId(referenceId),
+	referenceName(referenceName),
       mapPosition(mapPosition),
       clipPosition(clipPosition),
       matePosition(matePosition),
@@ -31,19 +32,19 @@ int AbstractClip::leftmostPosition() const {
 AbstractClip::~AbstractClip() {
 }
 
-Deletion AbstractClip::call(BamReader &reader, FaidxWrapper &faidx, int insLength, int minOverlap, double minIdentity, int minMapQual)
+Deletion *AbstractClip::call(TargetRegion *pTargetReg, FaidxWrapper &faidx, int minOverlap, double minIdentity)
 {
-    string refName = Helper::getReferenceName(reader, referenceId);
+    //string refName = Helper::getReferenceName(reader, referenceId);
 
-    vector<IRange> ranges;
-    fetchSpanningRanges(reader, insLength, ranges, minMapQual);
-//    vector<int> sizes;
-//    fecthSizesForSpanningPairs(reader, insLength, sizes);
+    //vector<IRange> ranges;
+    //fetchSpanningRanges(reader, insLength, ranges, minMapQual);
 
-    if (ranges.empty()) error("No deletion is found");
+    //if (ranges.empty()) error("No deletion is found");
 
-    vector<TargetRegion> regions;
-    toTargetRegions(refName, insLength, ranges, regions);
+	if (pTargetReg == NULL) error("No target region is found");
+    vector<TargetRegion0> regions;
+	regions.push_back({ referenceName, pTargetReg->GetStartPosition(), pTargetReg->GetEndPosition() });
+    //toTargetRegions(refName, insLength, ranges, regions);
 
     return call(faidx, regions, minOverlap, minIdentity);
 }
@@ -71,12 +72,13 @@ int AbstractClip::maxEditDistanceForSoftclippedPart()
 
 
 
-ForwardBClip::ForwardBClip(int referenceId, int mapPosition, int clipPosition, int matePosition, const string &sequence, const vector<CigarOp>& cigar)
-    : AbstractClip(referenceId, mapPosition, clipPosition, matePosition, sequence, cigar) {
+ForwardBClip::ForwardBClip(int referenceId, const std::string& referenceName, int mapPosition, int clipPosition,
+	int matePosition, const string &sequence, const vector<CigarOp>& cigar)
+    : AbstractClip(referenceId, referenceName, mapPosition, clipPosition, matePosition, sequence, cigar) {
 }
 
 /*
-Deletion ForwardBClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion> &regions, int minOverlap, double minIdentity) {
+Deletion *ForwardBClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion0> &regions, int minOverlap, double minIdentity) {
     for (auto it = regions.rbegin(); it != regions.rend(); ++it) {
         if ((*it).length() < lengthOfSoftclippedPart()) continue;
         string s1 = (*it).sequence(faidx);
@@ -92,16 +94,15 @@ Deletion ForwardBClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion>
         int end2 = rightEnd + offsetToRight;
         int len = start1 - end1 + 1;
         if (len > Helper::SVLEN_THRESHOLD) continue;
-        return Deletion((*it).referenceName, start1, start2, end1, end2, len, getType());
+        return new Deletion((*it).referenceName, start1, start2, end1, end2, len, getType());
     }
-    error("No deletion is found.");
+    return NULL;
 }
 */
 
-Deletion ForwardBClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion> &regions, int minOverlap, double minIdentity)
+Deletion *ForwardBClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion0> &regions, int minOverlap, double minIdentity)
 {
-//    error("No deletion is found.");
-    ScoreParam score_param(1, -1, 2, 4);
+    //ScoreParam score_param(1, -1, 2, 4);
     for (auto it = regions.begin(); it != regions.end(); ++it) {
         string s1 = (*it).sequence(faidx);
         reverse(s1.begin(), s1.end());
@@ -154,9 +155,9 @@ Deletion ForwardBClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion>
 //        }
 
         if (len > Helper::SVLEN_THRESHOLD) continue;
-        return Deletion((*it).referenceName, start1, start2, end1, end2, len, getType());
+        return new Deletion((*it).referenceName, start1, start2, end1, end2, len, getType());
     }
-    error("No deletion is found.");
+    return NULL;
 }
 
 string ForwardBClip::getType()
@@ -191,33 +192,7 @@ void ForwardBClip::fetchSpanningRanges(BamReader &reader, int insLength, std::ve
 
 }
 
-void ForwardBClip::fecthSizesForSpanningPairs(BamReader &reader, int insLength, std::vector<int> &sizes)
-{
-    int start = clipPosition;
-    int end = clipPosition + insLength + length();
-
-    if (!reader.SetRegion(referenceId, start - 1, referenceId, end))
-        error("Could not set the region.");
-
-    vector<pair<int, int> > records;
-    BamAlignment al;
-    while(reader.GetNextAlignment(al)) {
-        if (al.IsReverseStrand() && !al.IsMateReverseStrand() && al.RefID == al.MateRefID
-                && al.MapQuality > 0 && al.Position > al.MatePosition) {
-            records.push_back(make_pair(abs(al.InsertSize), al.Position - clipPosition));
-        }
-    }
-    sort(records.begin(), records.end(), [](const pair<int,int>& r1, const pair<int,int>& r2){ return r1.first < r2.first; });
-    cout << ">" << clipPosition << "," << mapPosition << endl;
-    transform(records.begin(), records.end(), ostream_iterator<string>(cout, " "), [](const pair<int,int>& r){
-        stringstream ss;
-        ss << "(" << r.first << "," << r.second << ")";
-        return ss.str();
-    });
-    cout << endl;
-}
-
-void ForwardBClip::toTargetRegions(const string &referenceName, int insLength, std::vector<IRange> &ranges, std::vector<TargetRegion> &regions)
+void ForwardBClip::toTargetRegions(const string &referenceName, int insLength, std::vector<IRange> &ranges, std::vector<TargetRegion0> &regions)
 {
     int rightmostPos = clipPosition + length();
 
@@ -251,7 +226,7 @@ void ForwardEClip::fetchSpanningRanges(BamReader &reader, int insLength, std::ve
     ranges.push_back({clipPosition, matePosition});
 }
 
-void ForwardEClip::toTargetRegions(const string &referenceName, int insLength, std::vector<IRange> &ranges, std::vector<TargetRegion> &regions)
+void ForwardEClip::toTargetRegions(const string &referenceName, int insLength, std::vector<IRange> &ranges, std::vector<TargetRegion0> &regions)
 {
     int pe = ranges[0].end + length();
     int leftmostPos = clipPosition;
@@ -261,7 +236,7 @@ void ForwardEClip::toTargetRegions(const string &referenceName, int insLength, s
     regions.push_back({referenceName, cPrime, pe});
 }
 
-Deletion ForwardEClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion> &regions, int minOverlap, double minIdentity)
+Deletion *ForwardEClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion0> &regions, int minOverlap, double minIdentity)
 {
     string s1 = regions[0].sequence(faidx);
     SequenceOverlap overlap = Overlapper::computeOverlapSW(s1, sequence, minOverlap, minIdentity, ungapped_params);
@@ -274,15 +249,16 @@ Deletion ForwardEClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion>
         int len = leftBp - rightBp;
         if (overlap.getOverlapLength() < cigar[cigar.size() - 1].Length) len += cigar[cigar.size() - 1].Length - overlap.getOverlapLength();
         if (len > Helper::SVLEN_THRESHOLD) error("No deletion was found.");
-        return Deletion(regions[0].referenceName, leftBp, leftBp, rightBp, rightBp, len);
+        return new Deletion(regions[0].referenceName, leftBp, leftBp, rightBp, rightBp, len);
     }
-    error("No deletion was found.");
+    return NULL;
 }
 */
 
 
-ReverseEClip::ReverseEClip(int referenceId, int mapPosition, int clipPosition, int matePosition, const string &sequence, const std::vector<CigarOp> &cigar)
-    : AbstractClip(referenceId, mapPosition, clipPosition, matePosition, sequence, cigar) {
+ReverseEClip::ReverseEClip(int referenceId, const std::string& referenceName, int mapPosition, int clipPosition,
+	int matePosition, const string &sequence, const std::vector<CigarOp> &cigar)
+    : AbstractClip(referenceId, referenceName, mapPosition, clipPosition, matePosition, sequence, cigar) {
 }
 
 void ReverseEClip::fetchSpanningRanges(BamReader &reader, int insLength, std::vector<IRange> &ranges, int minMapQual)
@@ -314,12 +290,7 @@ void ReverseEClip::fetchSpanningRanges(BamReader &reader, int insLength, std::ve
 
 }
 
-void ReverseEClip::fecthSizesForSpanningPairs(BamReader &reader, int insLength, std::vector<int> &sizes)
-{
-
-}
-
-void ReverseEClip::toTargetRegions(const string &referenceName, int insLength, std::vector<IRange> &ranges, std::vector<TargetRegion> &regions)
+void ReverseEClip::toTargetRegions(const string &referenceName, int insLength, std::vector<IRange> &ranges, std::vector<TargetRegion0> &regions)
 {
     int leftmostPos = clipPosition - length();
 
@@ -343,7 +314,7 @@ void ReverseEClip::toTargetRegions(const string &referenceName, int insLength, s
 }
 
 /*
-Deletion ReverseEClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion> &regions, int minOverlap, double minIdentity) {
+Deletion *ReverseEClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion0> &regions, int minOverlap, double minIdentity) {
     for (auto it = regions.rbegin(); it != regions.rend(); ++it) {
         if ((*it).length() < lengthOfSoftclippedPart()) continue;
         string s1 = (*it).sequence(faidx);
@@ -359,16 +330,15 @@ Deletion ReverseEClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion>
         int end2 = rightEnd + offsetToRight;
         int len = start1 - end1 + 1;
         if (len > Helper::SVLEN_THRESHOLD) continue;
-        return Deletion((*it).referenceName, start1, start2, end1, end2, len, getType());
+        return new Deletion((*it).referenceName, start1, start2, end1, end2, len, getType());
     }
-    error("No deletion is found.");
+    return NULL;
 }
 */
 
-Deletion ReverseEClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion> &regions, int minOverlap, double minIdentity)
+Deletion *ReverseEClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion0> &regions, int minOverlap, double minIdentity)
 {
-//    error("No deletion is found.");
-    ScoreParam score_param(1, -1, 2, 4);
+    //ScoreParam score_param(1, -1, 2, 4);
 
     for (auto it = regions.rbegin(); it != regions.rend(); ++it) {
         string s1 = (*it).sequence(faidx);
@@ -413,9 +383,9 @@ Deletion ReverseEClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion>
 //        }
 
         if (len > Helper::SVLEN_THRESHOLD) continue;
-        return Deletion((*it).referenceName, start1, start2, end1, end2, len, getType());
+        return new Deletion((*it).referenceName, start1, start2, end1, end2, len, getType());
     }
-    error("No deletion is found.");
+	return NULL;
 }
 
 string ReverseEClip::getType()
@@ -457,8 +427,9 @@ int ReverseEClip::offsetFromThatEnd(string referenceName, FaidxWrapper &faidx, i
 }
 
 
-ReverseBClip::ReverseBClip(int referenceId, int mapPosition, int clipPosition, int matePosition, const string &sequence, const std::vector<CigarOp> &cigar)
-    : AbstractClip(referenceId, mapPosition, clipPosition, matePosition, sequence, cigar) {
+ReverseBClip::ReverseBClip(int referenceId, const std::string& referenceName, int mapPosition, int clipPosition,
+	int matePosition, const string &sequence, const std::vector<CigarOp> &cigar)
+    : AbstractClip(referenceId, referenceName, mapPosition, clipPosition, matePosition, sequence, cigar) {
 }
 
 string ReverseBClip::getType()
@@ -466,7 +437,7 @@ string ReverseBClip::getType()
     return "3R";
 }
 
-Deletion ReverseBClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion> &regions, int minOverlap, double minIdentity)
+Deletion *ReverseBClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion0> &regions, int minOverlap, double minIdentity)
 {
     string s1 = regions[0].sequence(faidx);
     reverse(s1.begin(), s1.end());
@@ -492,9 +463,9 @@ Deletion ReverseBClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion>
     int end1 = delta > 0 ? rightBp : rightBp + delta;
     int end2 = delta > 0 ? rightBp + delta : rightBp;
     if (len > Helper::SVLEN_THRESHOLD) error("No deletion is found.");
-    return Deletion(regions[0].referenceName, start1, start2, end1, end2, len, getType());
+		return new Deletion(regions[0].referenceName, start1, start2, end1, end2, len, getType());
 
-    error("No deletion is found.");
+    return NULL;
 }
 
 void ReverseBClip::fetchSpanningRanges(BamReader &reader, int insLength, std::vector<IRange> &ranges, int minMapQual)
@@ -502,11 +473,7 @@ void ReverseBClip::fetchSpanningRanges(BamReader &reader, int insLength, std::ve
     ranges.push_back({matePosition + 1, clipPosition + 1});
 }
 
-void ReverseBClip::fecthSizesForSpanningPairs(BamReader &reader, int inslength, std::vector<int> &sizes)
-{
-}
-
-void ReverseBClip::toTargetRegions(const string &referenceName, int insLength, std::vector<IRange> &ranges, std::vector<TargetRegion> &regions)
+void ReverseBClip::toTargetRegions(const string &referenceName, int insLength, std::vector<IRange> &ranges, std::vector<TargetRegion0> &regions)
 {
     // ran.start, ran.start + insLength - length()
     int rightmostPos = clipPosition + length();
@@ -540,8 +507,9 @@ int ReverseBClip::offsetFromThatEnd(string referenceName, FaidxWrapper &faidx, i
 {
 }
 
-ForwardEClip::ForwardEClip(int referenceId, int mapPosition, int clipPosition, int matePosition, const string &sequence, const std::vector<CigarOp> &cigar)
-    : AbstractClip(referenceId, mapPosition, clipPosition, matePosition, sequence, cigar) {
+ForwardEClip::ForwardEClip(int referenceId, const std::string& referenceName, int mapPosition, int clipPosition,
+	int matePosition, const string &sequence, const std::vector<CigarOp> &cigar)
+    : AbstractClip(referenceId, referenceName, mapPosition, clipPosition, matePosition, sequence, cigar) {
 }
 
 string ForwardEClip::getType()
@@ -549,7 +517,7 @@ string ForwardEClip::getType()
     return "3F";
 }
 
-Deletion ForwardEClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion> &regions, int minOverlap, double minIdentity)
+Deletion *ForwardEClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion0> &regions, int minOverlap, double minIdentity)
 {
     string s1 = regions[0].sequence(faidx);
     SequenceOverlap overlap = Overlapper::computeOverlapSW2(s1, sequence, minOverlap, minIdentity, ungapped_params);
@@ -570,10 +538,10 @@ Deletion ForwardEClip::call(FaidxWrapper &faidx, const std::vector<TargetRegion>
     int end2 = delta > 0 ? rightBp : rightBp - delta;
 
     if (len <= Helper::SVLEN_THRESHOLD) {
-        return Deletion(regions[0].referenceName, start1, start2, end1, end2, len, getType());
+        return new Deletion(regions[0].referenceName, start1, start2, end1, end2, len, getType());
     }
 
-    error("No deletion is found.");
+    return NULL;
 }
 
 void ForwardEClip::fetchSpanningRanges(BamReader &reader, int insLength, std::vector<IRange> &ranges, int minMapQual)
@@ -581,11 +549,7 @@ void ForwardEClip::fetchSpanningRanges(BamReader &reader, int insLength, std::ve
     ranges.push_back({clipPosition + 1, matePosition + 1});
 }
 
-void ForwardEClip::fecthSizesForSpanningPairs(BamReader &reader, int inslength, std::vector<int> &sizes)
-{
-}
-
-void ForwardEClip::toTargetRegions(const string &referenceName, int insLength, std::vector<IRange> &ranges, std::vector<TargetRegion> &regions)
+void ForwardEClip::toTargetRegions(const string &referenceName, int insLength, std::vector<IRange> &ranges, std::vector<TargetRegion0> &regions)
 {
     // ran.end - insLength + 2 * length(), ran.end + length()
     int leftmostPos = clipPosition;

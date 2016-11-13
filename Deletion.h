@@ -28,6 +28,8 @@ public:
 
     int getLength() const { return length; }
 
+	std::string getType() const { return "DEL"; }
+
     std::string getFromTag() const { return fromTag; }
 
     std::string toBedpe() const;

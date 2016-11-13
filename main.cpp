@@ -18,6 +18,19 @@
 
 #include "easylogging++.h"
 
+#include "globals.h"
+#include "BamToolsRGToLibMapReader.h"
+#include "BamToolsLibInsertSizeEstimator.h"
+#include "MaxDistDiffBiPartitioner.h"
+#include "AnovaBiPartitionQualifier.h"
+#include "MedianPositionPicker.h"
+#include "CompositeTargetRegionFinder.h"
+#include "TargetRegionToLeftFinder.h"
+#include "TargetRegionToRightFinder.h"
+#include "BamToolsPairsToLeftReader.h"
+#include "BamToolsPairsToRightReader.h"
+#include "PerChromDeletionFinder.h"
+
 //
 // Getopt
 //
@@ -94,28 +107,64 @@ void output(const std::string& filename, const std::vector<Deletion>& dels);
 
 _INITIALIZE_EASYLOGGINGPP
 
+void MakeLibraries(IReadGroupToLibraryMapReader *pMapReader, std::map<std::string, Library*> &libraries)
+{
+	std::map<std::string, std::string> readGroupToLibMap;
+	if (pMapReader->GetMap(readGroupToLibMap))
+	{
+		for (auto &elt : readGroupToLibMap)
+		{
+			if (libraries.count(elt.second))
+			{
+				libraries[elt.second]->AddReadGroup(elt.first);
+			}
+			else
+			{
+				libraries[elt.second] = new Library(elt.second, elt.first);
+			}
+		}
+		return;
+	}
+
+	libraries[NORGTAGLIBNAME] = new Library(NORGTAGLIBNAME, NORGTAGREADGROUPNAME);
+}
+
+void EstimateInsertSizeForLibraries(ILibraryInsertSizeEstimator *pEstimator, std::map<std::string, Library*> &libraries)
+{
+	for (auto &p : libraries)
+	{
+		pEstimator->estimate(p.second);
+	}
+}
+
+void FindTargetRegions(PerChromDeletionFinder &finder, std::ostream& out)
+{
+	std::vector<TargetRegion *> regions;
+	finder.FindTargetRegions(regions);
+	for (auto &pRegion : regions)
+	{
+		out << *pRegion << std::endl;
+	}
+	finder.Clear();
+}
+
+void FindVariants(PerChromDeletionFinder &finder, const CallParams &cParams, std::ofstream& out, size_t &i)
+{
+	std::vector<Deletion*> variants;
+	finder.FindCalls(cParams, variants);
+	auto finalVariants = finder.MergeCalls(variants);
+	for (auto &pVariant : finalVariants)
+	{
+		out << *pVariant << "\tDEL." << i + 1 << "." << pVariant->getFromTag() << std::endl;
+		i++;
+	}
+	finder.Clear();
+}
+
 //
 // Main
 //
 int main(int argc, char *argv[]) {
-
-//    std::string s1 =
-//            "TCACTTGAACCCAGGAGGCAGAGGTTCCAGTGAGCTGAGATCATGCCACTGCACTCCAGCCTGGGCAACAGAGCGAGGCTCCATCTCA"
-//            "TCTCCTCTTTCCCTCCTGCCAACTGAAAATGTTTGCTTCGCTCTGTGAAAATAATGTTAATAAAAATGTCTATATACACATATAAAATGTCACTTATAAAAGATGTTAACTATAAAATAG"
-//            "CAGCTAGGGATAAGAGTTCTTAAGTCAAATCCTTAGAATCAATTAATTAGCTCTCCCAAACAAAACAAAACAAAACAAAAAAAGGCCATGGCCGAGCATGGTGGCTGACACCTGTAATCC"
-//            "CAGCACTTTAGGAGACTGAGGTGGGTAGACGGAGGTCAGGAGTTCAAGACCAGCGTGGCCAACATAGTGAAACCCCGTCTCTACTAAAAATACAAAAAAATTTGCCGGGCATAGAGGTGC"
-//            "ACACCTGTAATCCCAGCTACTTGGGAGGCTGAGGCACAAGAATCGCTTGAACCCAGGAGGTGGAAGTTGCAGCAACCTGAGGTTGCACCACTGCACTCCAGCCTGGGCAACAGAGCGAGA"
-//            "CTCCATCTCAAATAAATAAACAAACAAACAAAAACAAACTAGCTCTGCCAGTTGCTACCTTGAGAAAGTCACTTAACTTTTCTAAACCTCTTTTCCACCTATAAAAGTTAGTAATTGCTT"
-//            "AATTCACATATTGTGAGAATAAGAGAAATACTCTATATGGTACACTCATGACAATGACTAGGACACACTAAATACCCGTACTCAATTCAACAATGATCAGCATTATTACTGATTTACTAA"
-//            "TCTGCACTAATAAGCACAATAAGCTCTAACTAATAAGCAAAATAATTACTAACAATTATTTTAAATACTGTTAGTGGTACATACCTTATAATCTATAAAAGATTCTTGTTCCTGTTGACA"
-//            "CTGGGAAAGATAATCCTTCATATCATTCAATTCATC";
-//    std::string s2 = "TCACTTGAACCCAGGAGGCAGAGGTTCCAGTGAGCTGAGATCATGCCACTGCACTCCAGCCTGGGCAACAGAGCGAGGCTCCATCTCAAATAAATAATCAA";
-
-//    std::string s1 = "ACGGGGACT";
-//    std::string s2 = "ACGTTACT";
-//    SequenceOverlap result = Overlapper::ageAlignSuffix(s1, s2, ScoreParam(1, -1, 2, 4));
-//    LINFO << result;
-//    return 0;
 
     parseOptions(argc, argv);
 
@@ -134,124 +183,83 @@ int main(int argc, char *argv[]) {
 //                          1.0f - opt::errorRate,
 //                          opt::insertMean,
 //                          opt::insertSd };
+	BamTools::BamReader bamReader;
+	if (!bamReader.Open(opt::bamFile))
+		error("Could not open the input BAM file.");
+	if (!bamReader.LocateIndex())
+		error("Could not locate the index file");
+
+	IReadGroupToLibraryMapReader *pMapReader = new BamToolsRGToLibMapReader(&bamReader);
+	std::map<std::string, Library*> libraries;
+	MakeLibraries(pMapReader, libraries);
+	ILibraryInsertSizeEstimator *pEstimator = new BamToolsLibInsertSizeEstimator(&bamReader);
+	EstimateInsertSizeForLibraries(pEstimator, libraries);
+
+	CompositeTargetRegionFinder tRegionToLeftFinder;
+	CompositeTargetRegionFinder tRegionToRightFinder;
+
+	IBiPartitioner* pPartitioner = new MaxDistDiffBiPartitioner();
+	IBiPartitionQualifier* pQualifier = new AnovaBiPartitionQualifier(0.0005);
+	IPositionPicker* pPosPicker = new MedianPositionPicker();
+
+	for (auto elt : libraries)
+	{
+		ISpanningPairsReader *pPairsToLeftReader = new BamToolsPairsToLeftReader(elt.second, &bamReader);
+		tRegionToLeftFinder.Add(new TargetRegionToLeftFinder(pPairsToLeftReader,
+			pPartitioner,
+			pQualifier,
+			pPosPicker));
+		ISpanningPairsReader *pPairsToRightReader = new BamToolsPairsToRightReader(elt.second, &bamReader);
+		tRegionToRightFinder.Add(new TargetRegionToRightFinder(pPairsToRightReader,
+			pPartitioner,
+			pQualifier,
+			pPosPicker));
+	}
 
     ClipReader creader(opt::bamFile, opt::allowedNum, opt::mode, opt::minMapQual, opt::insertMean + DEFAULT_SD_CUTOFF * opt::insertSd);
 
-    BamTools::BamReader bamReader;
-    if (!bamReader.Open(opt::bamFile))
-        error("Could not open the input BAM file.");
-    if (!bamReader.LocateIndex())
-        error("Could not locate the index file");
 
     FaidxWrapper faidx(opt::refFile);
 
-    int insLength = opt::insertMean + 3 * opt::insertSd;
-    double identityRate = 1.0f - opt::errorRate;
+    //int insLength = opt::insertMean + 3 * opt::insertSd;
+    //double identityRate = 1.0f - opt::errorRate;
 
-    std::vector<Deletion> deletions;
+	int prevId = -1;
+	int currentId;
 
-//    Timer* pTimer = new Timer("Preprocessing split reads");
-    Timer* pTimer = new Timer("Calling deletions");
-    AbstractClip *pClip;
-//    std::vector<AbstractClip*> clips;
-    while ((pClip = creader.nextClip())) {
-//        clips.push_back(pClip);
-        try {
-            auto del = pClip->call(bamReader, faidx, insLength, opt::minOverlap, identityRate, opt::minMapQual);
-            deletions.push_back(del);
-        } catch (ErrorException& ex) {
-    //            std::cout << ex.getMessage() << std::endl;
-        }
-    }
-    delete pTimer;
+	size_t i = 0;
+	CallParams cParams(opt::minOverlap, opt::errorRate);
+	PerChromDeletionFinder finder(&tRegionToLeftFinder, &tRegionToRightFinder, &faidx);
 
-//    std::cout << "# Soft-clipping reads: " << clips.size() << std::endl;
+	std::ofstream out(opt::outFile.c_str());
 
-/*
-    sort(clips.begin(), clips.end(),
-         [](AbstractClip* pc1, AbstractClip* pc2){ return pc1->getClipPosition() < pc2->getClipPosition(); });
+	Timer* pTimer = new Timer("Calling deletions");
+	AbstractClip *pRead;
 
-    size_t k = 50;
-    for (size_t i = 0; i < clips.size() - 1; ++i) {
-        for (size_t j = i + 1; j < std::min(i + k, clips.size()); ++j) {
-            if (clips[i]->hasConflictWith(clips[j])) {
-                clips[i]->setConflictFlag(true);
-                clips[j]->setConflictFlag(true);
-            }
-        }
-    }
+	while ((pRead = creader.nextClip()))
+	{
+		currentId = pRead->getReferenceId();
+		//        std::cout << currentId << std::endl;
+		if (prevId != -1 && prevId != currentId)
+		{
+			//            FindTargetRegions(finder, out);
+			FindVariants(finder, cParams, out, i);
+		}
 
-    std::cout << "#Reads with soft-clipping (original): " << clips.size() << std::endl;
+		finder.AddRead(pRead);
+		prevId = currentId;
+	}
+	//    FindTargetRegions(finder, std::cout);
+	FindVariants(finder, cParams, out, i);
 
-    std::vector<AbstractClip*> newClips;
-    std::copy_if(clips.begin(), clips.end(), back_inserter(newClips),
-                   [](AbstractClip* pc){ return !pc->getConflictFlag(); });
+	delete pTimer;
 
-    std::cout << "#Reads with soft-clipping after resolving conflicts: " << newClips.size() << std::endl;
-
-    std::vector<std::vector<AbstractClip*> > clipClusters;
-    cluster(clips, clipClusters,
-            [](AbstractClip* pc1, AbstractClip* pc2){ return pc1->getClipPosition() == pc2->getClipPosition(); });
-
-    std::cout << "#Reads with soft-clipping after clustering: " << clipClusters.size() << std::endl;
-
-    std::vector<AbstractClip*> finalClips;
-    finalClips.reserve(clipClusters.size());
-    std::transform(clipClusters.begin(), clipClusters.end(), back_inserter(finalClips),
-                   [](const std::vector<AbstractClip*>& v){ return v[v.size()/2]; });
-*/
-
-    /*
-    pTimer = new Timer("Calling deletions");
-    for (auto pClip: clips) {
-//        if (pClip->getConflictFlag()) continue;
-        try {
-            auto del = pClip->call(bamReader, faidx, insLength, opt::minOverlap, identityRate, opt::minMapQual);
-            deletions.push_back(del);
-        } catch (ErrorException& ex) {
-    //            std::cout << ex.getMessage() << std::endl;
-        }
-    }
-    delete pTimer;
-    */
-
-    if (deletions.empty()) {
+    if (!i) {
         std::cout << "No deletion was found." << std::endl;
         return 0;
     }
 
-    pTimer = new Timer("Merging deletions");
-    std::sort(deletions.begin(), deletions.end());
-    deletions.erase(std::unique(deletions.begin(), deletions.end()), deletions.end());
-
-//    std::vector<std::vector<Deletion> > delClusters;
-
-//    cluster(deletions, delClusters,
-//            [](const Deletion& d1, const Deletion& d2){ return d1.overlaps(d2); });
-
-    std::vector<Deletion> finalDels;
-    merge(deletions, finalDels,
-            [](const Deletion& d1, const Deletion& d2){ return d1.overlaps(d2); });
-//    finalDels.reserve(delClusters.size());
-//    for (auto &clu: delClusters) {
-//        finalDels.push_back(clu[0]);
-        /*
-        if (clu.size() == 1) finalDels.push_back(clu[0]);
-        else {
-            Deletion d(clu[0].getReferenceName(),
-                    clu[0].getStart1(),
-                    clu[clu.size()-1].getEnd1(),
-                    clu[0].getStart2(),
-                    clu[clu.size()-1].getEnd2(),
-                    clu[0].getLength(),
-                    clu[0].getFromTag());
-            finalDels.push_back(d);
-        }
-        */
-//    }
-    delete pTimer;
-
-    output(opt::outFile, finalDels);
+    //output(opt::outFile, finalDels);
 
     return 0;
 }

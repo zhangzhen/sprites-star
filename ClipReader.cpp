@@ -1,6 +1,7 @@
 #include "ClipReader.h"
 #include "error.h"
 #include "api/BamAlgorithms.h"
+#include "Helper.h"
 
 using namespace std;
 using namespace BamTools;
@@ -49,6 +50,7 @@ AbstractClip *ClipReader::nextClip() {
                     (size == 1 ||
                      (size == 2 && clipSizes[1] <= 5))) {
                 return new ForwardBClip(al.RefID,
+					Helper::getReferenceName(reader, al.RefID),
                                         al.Position + 1,
                                         genomePositions[0] + 1,
                                         al.MatePosition + 1,
@@ -60,6 +62,7 @@ AbstractClip *ClipReader::nextClip() {
                     (size == 1 ||
                      (size == 2 && clipSizes[0] <= 5))) {
                 return new ReverseEClip(al.RefID,
+					Helper::getReferenceName(reader, al.RefID),
                                         al.Position + 1,
                                         genomePositions[size - 1] + 1,
                                         al.MatePosition + 1,
@@ -75,6 +78,7 @@ AbstractClip *ClipReader::nextClip() {
                     clipSizes[size - 1] >= allowedNum &&
                     (size == 1 || (size == 2 && clipSizes[0] <= 5))) {
                 return new ForwardEClip(al.RefID,
+					Helper::getReferenceName(reader, al.RefID),
                                         al.Position + 1,
                                         genomePositions[size - 1] + 1,
                                         al.MatePosition + 1,
@@ -85,6 +89,7 @@ AbstractClip *ClipReader::nextClip() {
                     clipSizes[0] >= allowedNum &&
                     (size == 1 || (size == 2 && clipSizes[1] <= 5))) {
                 return new ReverseBClip(al.RefID,
+					Helper::getReferenceName(reader, al.RefID),
                                         al.Position + 1,
                                         genomePositions[0] + 1,
                                         al.MatePosition + 1,
