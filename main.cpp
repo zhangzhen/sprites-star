@@ -249,7 +249,7 @@ int main(int argc, char *argv[]) {
 		finder.AddRead(pRead);
 		prevId = currentId;
 	}
-	//    FindTargetRegions(finder, std::cout);
+	//FindTargetRegions(finder, std::cout);
 	FindVariants(finder, cParams, out, i);
 
 	delete pTimer;
